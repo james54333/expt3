@@ -1,4 +1,4 @@
-module expt3( CLOCK_50, SW, KEY, GPIO, LEDR, // control
+module xpt3( CLOCK_50, SW, KEY, GPIO, LEDR, // control
 				  AUD_DACLRCK, AUD_ADCLRCK, AUD_ADCDAT, AUD_DACDAT, AUD_XCK, AUD_BCLK, I2C_SCLK, I2C_SDAT, // AUDIO CODEC
 				  SRAM_DQ, SRAM_ADDR, SRAM_WE_N, SRAM_OE_N, SRAM_CE_N, SRAM_UB_N, SRAM_LB_N, // SRAM
 				  LCD_DATA, LCD_RW, LCD_EN, LCD_RS, LCD_ON, LCD_BLON, // LCD module
@@ -58,7 +58,6 @@ module expt3( CLOCK_50, SW, KEY, GPIO, LEDR, // control
 	///////////////////////////////////////
 		
 	// define reg and wire
-	wire inter;
 	wire reset;
 	wire i2c_ready;
 	wire play;
@@ -84,14 +83,23 @@ module expt3( CLOCK_50, SW, KEY, GPIO, LEDR, // control
 	reg [7:0] mLCD_DATA;
 	reg [2:0] state;
 	reg [2:0] state_next;
+    
+    reg [2:0] counter;
+    reg [2:0] counter_limit;
+    
 	reg [4:0] Lcounter;
 	reg [4:0] Lcounter_next;
 	reg [4:0] Rcounter;
 	reg [4:0] Rcounter_next;
+    
 	reg [15:0] SRAM_DQ;
 	reg [15:0] sdata;
-	reg [15:0] sdata_next;
-	reg [15:0] temp_sdata;
+	reg [18:0] temp_sdata;
+    reg [15:0] temp_sdata_P;
+    
+    reg [15:0] sdata_now;
+    reg [15:0] sdata_past;
+    
 	reg [19:0] SRAM_ADDR;
 	reg [19:0] temp_addr;
 	reg [19:0] full_addr;
@@ -114,21 +122,21 @@ module expt3( CLOCK_50, SW, KEY, GPIO, LEDR, // control
 	parameter LCD_LINE2 = LCD_LINE1 + 16 + 1;
 	parameter LUT_SIZE = LCD_LINE1 + 32 + 1;
 	
-	parameter x1 = 4'd1;
-	parameter x2 = 4'd2;
-	parameter x3 = 4'd3;
-	parameter x4 = 4'd4;
-	parameter x5 = 4'd5;
-	parameter x6 = 4'd6;
-	parameter x7 = 4'd7;
-	parameter x8 = 4'd8;
-	parameter x1_2 = 4'd9;
-	parameter x1_3 = 4'd10;
-	parameter x1_4 = 4'd11;
-	parameter x1_5 = 4'd12;
-	parameter x1_6 = 4'd13;
-	parameter x1_7 = 4'd14;
-	parameter x1_8 = 4'd15;
+	parameter x1    = 4'd8 ;
+	parameter x2    = 4'd9 ;
+	parameter x3    = 4'd10;
+	parameter x4    = 4'd11;
+	parameter x5    = 4'd12;
+	parameter x6    = 4'd13;
+	parameter x7    = 4'd14;
+	parameter x8    = 4'd15;
+	parameter x1_2  = 4'd1;
+	parameter x1_3  = 4'd2;
+	parameter x1_4  = 4'd3;
+	parameter x1_5  = 4'd4;
+	parameter x1_6  = 4'd5;
+	parameter x1_7  = 4'd6;
+	parameter x1_8  = 4'd7;
 		
 	// assignment
 	assign spdswitch = SW[0];
@@ -155,12 +163,8 @@ module expt3( CLOCK_50, SW, KEY, GPIO, LEDR, // control
 	
 	// Audio handle
 	assign AUD_ADCLRCK = AUD_DACLRCK;
-	Audio Audio_setting( AUD_DACLRCK, AUD_BCLK, AUD_XCK, AUD_CTRL_CLK, reset, speed, inter );
+	Audio Audio_setting( AUD_DACLRCK, AUD_BCLK, AUD_XCK, AUD_CTRL_CLK, reset );
 	Audio_PLL Audio_clock( .areset(~i2c_ready), .inclk0(TD_CLK27), .c1(AUD_CTRL_CLK) );
-	
-	// IR handle
-	IR_RECEIVE u2( CLOCK_50, reset, IRDA_RXD, data_ready, hex_data );
-	IR_Control Remoter( CLOCK_50, reset, hex_data[23:16], inter );
 	
 	
 	//============================== main function start ==============================
@@ -184,7 +188,7 @@ module expt3( CLOCK_50, SW, KEY, GPIO, LEDR, // control
 					end
 					else begin
 						time_div = 27'b0;
-						time_sec = ( time_sec + 27'b1 );
+						time_sec = ( time_sec + 7'b1 );
 					end
 				end
 				
@@ -276,7 +280,8 @@ module expt3( CLOCK_50, SW, KEY, GPIO, LEDR, // control
 	
 	// speed control
 	always @ ( posedge CLOCK_50 ) begin
-		speed = ( reset == 1 )? x1 : speed_next;
+		speed = (reset)? x1 : speed_next;
+        counter_limit = (reset)? 3'b0 : speed_next[2:0];
 	end
 	
 	always @ (*) begin
@@ -483,10 +488,12 @@ module expt3( CLOCK_50, SW, KEY, GPIO, LEDR, // control
 		else begin
 			Lcounter = Lcounter_next;
 			Rcounter = Rcounter_next;
-			sdata = temp_sdata;
+			sdata = temp_sdata[15:0];
 		end
 	end
 	
+    wire [2:0] counter_temp = (counter==counter_limit)? 3'd0 : counter + 3'd1;
+    
 	always @ ( posedge AUD_ADCLRCK ) begin
 		case(state)
 			IDLE: begin
@@ -495,12 +502,31 @@ module expt3( CLOCK_50, SW, KEY, GPIO, LEDR, // control
 			end
 		
 			PLAY: begin
-				temp_addr = ( SRAM_ADDR + 1 );
+                counter <= counter_temp;
+                
+                case(speed)
+                    x1  : temp_addr = SRAM_ADDR + 20'd1;
+                    x2  : temp_addr = SRAM_ADDR + 20'd2;
+                    x3  : temp_addr = SRAM_ADDR + 20'd3;
+                    x4  : temp_addr = SRAM_ADDR + 20'd4;
+                    x5  : temp_addr = SRAM_ADDR + 20'd5;
+                    x6  : temp_addr = SRAM_ADDR + 20'd6;
+                    x7  : temp_addr = SRAM_ADDR + 20'd7;
+                    x8  : temp_addr = SRAM_ADDR + 20'd8;
+                    default: temp_addr = (counter==counter_limit)? SRAM_ADDR + 20'd1 : SRAM_ADDR;
+                    //x1_2: temp_addr = (counter==counter_limit)? SRAM_ADDR + 20'd1 : SRAM_ADDR;
+                    //x1_3: temp_addr = (counter==counter_limit)? SRAM_ADDR + 20'd1 : SRAM_ADDR;
+                    //x1_4: temp_addr = (counter==counter_limit)? SRAM_ADDR + 20'd1 : SRAM_ADDR;
+                    //x1_5: temp_addr = (counter==counter_limit)? SRAM_ADDR + 20'd1 : SRAM_ADDR;
+                    //x1_6: temp_addr = (counter==counter_limit)? SRAM_ADDR + 20'd1 : SRAM_ADDR;
+                    //x1_7: temp_addr = (counter==counter_limit)? SRAM_ADDR + 20'd1 : SRAM_ADDR;
+                    //x1_8: temp_addr = (counter==counter_limit)? SRAM_ADDR + 20'd1 : SRAM_ADDR;
+                endcase
 				full = ( ( temp_addr >= 20'b11111111111111111111 ) || ( temp_addr >= full_addr ) ) ? 1'b1 : 1'b0 ;
 			end
 		
 			REC: begin
-				temp_addr = ( SRAM_ADDR + 1 );
+				temp_addr = ( SRAM_ADDR + 20'b1 );
 				full = ( temp_addr >= 20'b11111111111111111111 ) ? 1'b1 : 1'b0 ;
 			end
 		
@@ -524,17 +550,18 @@ module expt3( CLOCK_50, SW, KEY, GPIO, LEDR, // control
 	always @ ( posedge AUD_XCK ) begin
 		if(reset) begin
 			full_addr = 20'b0;
-			SRAM_ADDR = ( SRAM_ADDR >= 20'b11111111111111111111 ) ?  20'b0 :( SRAM_ADDR + 1 );
+			SRAM_ADDR = ( SRAM_ADDR >= 20'b11111111111111111111 ) ?  20'b0 :( SRAM_ADDR + 20'b1 );
 			SRAM_DQ <= 16'b0;
+            sdata_now = 16'd0;
+            sdata_past = 16'd0;
 		end
 		else if ( AUD_ADCLRCK == 1 ) begin
-			//Lcounter_next = ( Lcounter == 16 ) ? 5'd0 : ( Lcounter + 5'd1 );
 			Rcounter_next = 5'd0;
 			Lcounter_next = ( Lcounter == 16 ) ? 5'd0 : ( Lcounter + 5'd1 );
 			
 			case(state)
 				IDLE: begin
-					temp_sdata = 16'b0;
+					temp_sdata[15:0] = 16'b0;
 					SRAM_ADDR = temp_addr;
 					AUD_DACDAT = 1'b0;
 				end
@@ -543,11 +570,23 @@ module expt3( CLOCK_50, SW, KEY, GPIO, LEDR, // control
 					SRAM_DQ <= 'bz;
 					SRAM_ADDR = temp_addr;
 					
-					if ( Lcounter == 5'd0 ) begin
-						temp_sdata = SRAM_DQ;
+                    if (Lcounter==5'd0 && counter==3'd0)            sdata_now = SRAM_DQ;
+                    if (Lcounter==5'd0 && counter==counter_limit)   sdata_past = sdata_now;
+					
+                    if ( Lcounter == 5'd0 ) begin
+                        case(speed)
+                            x1_2: temp_sdata =((counter_limit-counter+3'd1)*sdata_past + counter*sdata_now)/2;
+                            x1_3: temp_sdata =((counter_limit-counter+3'd1)*sdata_past + counter*sdata_now)/3;
+                            x1_4: temp_sdata =((counter_limit-counter+3'd1)*sdata_past + counter*sdata_now)/4;
+                            x1_5: temp_sdata =((counter_limit-counter+3'd1)*sdata_past + counter*sdata_now)/5;
+                            x1_6: temp_sdata =((counter_limit-counter+3'd1)*sdata_past + counter*sdata_now)/6;
+                            x1_7: temp_sdata =((counter_limit-counter+3'd1)*sdata_past + counter*sdata_now)/7;
+                            x1_8: temp_sdata =((counter_limit-counter+3'd1)*sdata_past + counter*sdata_now)/8;
+                            default: temp_sdata[15:0] = SRAM_DQ;
+                        endcase
 					end
 					else begin
-						temp_sdata = { sdata[14:0], 1'b0 };
+                        temp_sdata[15:0] = { sdata[14:0], 1'b0 };
 					end
 					
 					AUD_DACDAT = temp_sdata[15];
@@ -558,27 +597,27 @@ module expt3( CLOCK_50, SW, KEY, GPIO, LEDR, // control
 					full_addr = temp_addr;
 					
 					case(Lcounter)
-						5'd1: temp_sdata = { AUD_ADCDAT, sdata[14:0] };
-						5'd2: temp_sdata = { sdata[15], AUD_ADCDAT, sdata[13:0] };
-						5'd3: temp_sdata = { sdata[15:14], AUD_ADCDAT, sdata[12:0] };
-						5'd4: temp_sdata = { sdata[15:13], AUD_ADCDAT, sdata[11:0] };
-						5'd5: temp_sdata = { sdata[15:12], AUD_ADCDAT, sdata[10:0] };
-						5'd6: temp_sdata = { sdata[15:11], AUD_ADCDAT, sdata[9:0] };
-						5'd7: temp_sdata = { sdata[15:10], AUD_ADCDAT, sdata[8:0] };
-						5'd8: temp_sdata = { sdata[15:9], AUD_ADCDAT, sdata[7:0] };
-						5'd9: temp_sdata = { sdata[15:8], AUD_ADCDAT, sdata[6:0] };
-						5'd10: temp_sdata = { sdata[15:7], AUD_ADCDAT, sdata[5:0] };
-						5'd11: temp_sdata = { sdata[15:6], AUD_ADCDAT, sdata[4:0] };
-						5'd12: temp_sdata = { sdata[15:5], AUD_ADCDAT, sdata[3:0] };
-						5'd13: temp_sdata = { sdata[15:4], AUD_ADCDAT, sdata[2:0] };
-						5'd14: temp_sdata = { sdata[15:3], AUD_ADCDAT, sdata[1:0] };
-						5'd15: temp_sdata = { sdata[15:2], AUD_ADCDAT, sdata[0] };
-						5'd16: temp_sdata = { sdata[15:1], AUD_ADCDAT };
-						default: temp_sdata = sdata;
+						5'd1: temp_sdata[15:0] = { AUD_ADCDAT, sdata[14:0] };
+						5'd2: temp_sdata[15:0] = { sdata[15], AUD_ADCDAT, sdata[13:0] };
+						5'd3: temp_sdata[15:0] = { sdata[15:14], AUD_ADCDAT, sdata[12:0] };
+						5'd4: temp_sdata[15:0] = { sdata[15:13], AUD_ADCDAT, sdata[11:0] };
+						5'd5: temp_sdata[15:0] = { sdata[15:12], AUD_ADCDAT, sdata[10:0] };
+						5'd6: temp_sdata[15:0] = { sdata[15:11], AUD_ADCDAT, sdata[9:0] };
+						5'd7: temp_sdata[15:0] = { sdata[15:10], AUD_ADCDAT, sdata[8:0] };
+						5'd8: temp_sdata[15:0] = { sdata[15:9], AUD_ADCDAT, sdata[7:0] };
+						5'd9: temp_sdata[15:0] = { sdata[15:8], AUD_ADCDAT, sdata[6:0] };
+						5'd10: temp_sdata[15:0] = { sdata[15:7], AUD_ADCDAT, sdata[5:0] };
+						5'd11: temp_sdata[15:0] = { sdata[15:6], AUD_ADCDAT, sdata[4:0] };
+						5'd12: temp_sdata[15:0] = { sdata[15:5], AUD_ADCDAT, sdata[3:0] };
+						5'd13: temp_sdata[15:0] = { sdata[15:4], AUD_ADCDAT, sdata[2:0] };
+						5'd14: temp_sdata[15:0] = { sdata[15:3], AUD_ADCDAT, sdata[1:0] };
+						5'd15: temp_sdata[15:0] = { sdata[15:2], AUD_ADCDAT, sdata[0] };
+						5'd16: temp_sdata[15:0] = { sdata[15:1], AUD_ADCDAT };
+						default: temp_sdata[15:0] = sdata;
 					endcase
 					
 					if ( Lcounter == 5'd16 ) begin
-						SRAM_DQ <= temp_sdata;
+						SRAM_DQ <= temp_sdata[15:0];
 					end
 					else begin
 						SRAM_DQ <= 16'b0;
@@ -596,20 +635,19 @@ module expt3( CLOCK_50, SW, KEY, GPIO, LEDR, // control
 				end
 
 				default: begin
-					temp_sdata = 16'b0;
+					temp_sdata[15:0] = 16'b0;
 					SRAM_ADDR = temp_addr;
 					AUD_DACDAT = 1'b0;
 				end
 			endcase
 		end
 		else begin
-			//Rcounter_next = ( Rcounter == 16 ) ? 5'd0 : ( Rcounter + 5'd1 );
 			Lcounter_next = 5'd0;
 			Rcounter_next = ( Rcounter == 16 ) ? 5'd0 : ( Rcounter + 5'd1 );
 			
 			case(state)
 				IDLE: begin
-					temp_sdata = 16'b0;
+					temp_sdata[15:0] = 16'b0;
 					SRAM_ADDR = temp_addr;
 					AUD_DACDAT = 1'b0;
 				end
@@ -619,47 +657,29 @@ module expt3( CLOCK_50, SW, KEY, GPIO, LEDR, // control
 					SRAM_ADDR = temp_addr;
 					//SRAM_ADDR =  ( ( temp_addr + 1 ) >= 20'b11111111111111111111 ) ? (temp_addr) : ( temp_addr + 1 );
 					
-					if ( Rcounter == 5'd0 ) begin
-						temp_sdata = SRAM_DQ;
+					if (Rcounter==5'd0 && counter==3'd0)            sdata_now = SRAM_DQ;
+                    if (Rcounter==5'd0 && counter==counter_limit)   sdata_past = sdata_now;
+					
+                    if ( Rcounter == 5'd0 ) begin
+                        case(speed)
+                            x1_2: temp_sdata =((counter_limit-counter+3'd1)*sdata_past + counter*sdata_now)/2;
+                            x1_3: temp_sdata =((counter_limit-counter+3'd1)*sdata_past + counter*sdata_now)/3;
+                            x1_4: temp_sdata =((counter_limit-counter+3'd1)*sdata_past + counter*sdata_now)/4;
+                            x1_5: temp_sdata =((counter_limit-counter+3'd1)*sdata_past + counter*sdata_now)/5;
+                            x1_6: temp_sdata =((counter_limit-counter+3'd1)*sdata_past + counter*sdata_now)/6;
+                            x1_7: temp_sdata =((counter_limit-counter+3'd1)*sdata_past + counter*sdata_now)/7;
+                            x1_8: temp_sdata =((counter_limit-counter+3'd1)*sdata_past + counter*sdata_now)/8;
+                            default: temp_sdata[15:0] = SRAM_DQ;
+                        endcase
 					end
 					else begin
-						temp_sdata = { sdata[14:0], 1'b0 };
+                        temp_sdata[15:0] = { sdata[14:0], 1'b0 };
 					end
 					
 					AUD_DACDAT = temp_sdata[15];
 				end
 				
-				REC: begin /*
-					//SRAM_ADDR = temp_addr; 
-					SRAM_ADDR =  ( ( temp_addr + 1 ) >= 20'b11111111111111111111 ) ? (temp_addr) : ( temp_addr + 1 );
-					
-					case(Rcounter)
-						5'd1: temp_sdata = { AUD_ADCDAT, sdata[14:0] };
-						5'd2: temp_sdata = { sdata[15], AUD_ADCDAT, sdata[13:0] };
-						5'd3: temp_sdata = { sdata[15:14], AUD_ADCDAT, sdata[12:0] };
-						5'd4: temp_sdata = { sdata[15:13], AUD_ADCDAT, sdata[11:0] };
-						5'd5: temp_sdata = { sdata[15:12], AUD_ADCDAT, sdata[10:0] };
-						5'd6: temp_sdata = { sdata[15:11], AUD_ADCDAT, sdata[9:0] };
-						5'd7: temp_sdata = { sdata[15:10], AUD_ADCDAT, sdata[8:0] };
-						5'd8: temp_sdata = { sdata[15:9], AUD_ADCDAT, sdata[7:0] };
-						5'd9: temp_sdata = { sdata[15:8], AUD_ADCDAT, sdata[6:0] };
-						5'd10: temp_sdata = { sdata[15:7], AUD_ADCDAT, sdata[5:0] };
-						5'd11: temp_sdata = { sdata[15:6], AUD_ADCDAT, sdata[4:0] };
-						5'd12: temp_sdata = { sdata[15:5], AUD_ADCDAT, sdata[3:0] };
-						5'd13: temp_sdata = { sdata[15:4], AUD_ADCDAT, sdata[2:0] };
-						5'd14: temp_sdata = { sdata[15:3], AUD_ADCDAT, sdata[1:0] };
-						5'd15: temp_sdata = { sdata[15:2], AUD_ADCDAT, sdata[0] };
-						5'd16: temp_sdata = { sdata[15:1], AUD_ADCDAT };
-						default: temp_sdata = sdata;
-					endcase
-					
-					if ( Rcounter == 5'd16 ) begin
-						SRAM_DQ <= temp_sdata;
-					end
-					else begin
-						SRAM_DQ <= 16'b0;
-					end
-					*/
+				REC: begin 
 					AUD_DACDAT = 1'b0;
 				end
 				
@@ -672,7 +692,7 @@ module expt3( CLOCK_50, SW, KEY, GPIO, LEDR, // control
 				end
 				
 				default: begin
-					temp_sdata = 16'b0;
+					temp_sdata[15:0] = 16'b0;
 					SRAM_ADDR = temp_addr;
 					AUD_DACDAT = 1'b0;
 				end
